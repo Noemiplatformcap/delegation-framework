@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -e
+
+echo "=== NOEMI PLATFORM CAP: MULTI-CHAIN SELECTABLE DEPLOY ==="
+
+# === 1. Check Foundry Installation ===
+echo "[1/9] Installing Foundry if missing..."
+if ! command -v forge &> /dev/null; then
+    echo "Foundry not found. Installing..."
+    curl -L https://foundry.paradigm.xyz | bash
+    source ~/.bashrc || source ~/.zshrc
+    foundryup
+else
+    echo "Foundry already installed."
+fi
+
+# === 2. Load deployment environment ===
+echo "[2/9] Loading deploy.env..."
+if [ ! -f deploy.env ]; then
+    echo "deploy.env not found. Copy deploy.env.template and fill in your RPCs and PRIVATE_KEY."
+    exit 1
+fi
+source deploy.env
+
+# === 3. Build contracts ===
+echo "[3/9] Building contracts..."
+forge build
+
+# === 4. Define chains and RPCs ===
+declare -A CHAINS
+CHAINS=(["MAINNET"]=$RPC_MAINNET ["BASE"]=$RPC_BASE ["OPTIMISM"]=$RPC_OPTIMISM ["ARBITRUM"]=$RPC_ARBITRUM ["POLYGON"]=$RPC_POLYGON)
+
+# === 5. Selectable enforcers (toggle true/false) ===
+DEPLOY_STREAMING=true
+DEPLOY_BALANCE=true
+DEPLOY_ARGSCHECK=false
+
+export DEPLOY_STREAMING
+export DEPLOY_BALANCE
+export DEPLOY_ARGSCHECK
+
+# === 6. Select chains to deploy (toggle true/false) ===
+DEPLOY_MAINNET=true
+DEPLOY_BASE=true
+DEPLOY_OPTIMISM=false
+DEPLOY_ARBITRUM=false
+DEPLOY_POLYGON=false
+
+# Map selection
+CHAIN_SELECTION=("MAINNET" "BASE" "OPTIMISM" "ARBITRUM" "POLYGON")
+declare -A SELECTED
+SELECTED=(["MAINNET"]=$DEPLOY_MAINNET ["BASE"]=$DEPLOY_BASE ["OPTIMISM"]=$DEPLOY_OPTIMISM ["ARBITRUM"]=$DEPLOY_ARBITRUM ["POLYGON"]=$DEPLOY_POLYGON)
+
+# === 7. Create outputs folder ===
+mkdir -p deployment_outputs
+
+# === 8. Deploy loop per selected chain ===
+for CHAIN in "${CHAIN_SELECTION[@]}"; do
+    if [ "${SELECTED[$CHAIN]}" != true ]; then
+        echo "Skipping $CHAIN (not selected)."
+        continue
+    fi
+
+    RPC_URL=${CHAINS[$CHAIN]}
+    if [ -z "$RPC_URL" ]; then
+        echo "Skipping $CHAIN: RPC not set."
+        continue
+    fi
+
+    echo "=== Deploying to $CHAIN ==="
+
+    # Deploy Delegation Framework
+    echo "[8a] Delegation Framework..."
+    forge script script/DeployDelegationFramework.s.sol \
+        --rpc-url $RPC_URL \
+        --private-key $PRIVATE_KEY \
+        --broadcast \
+        --json | tee deployment_outputs/delegation_framework_$CHAIN.json
+
+    # Deploy Caveat Enforcers
+    echo "[8b] Caveat Enforcers..."
+    forge script script/DeployCaveatEnforcers.s.sol \
+        --rpc-url $RPC_URL \
+        --private-key $PRIVATE_KEY \
+        --broadcast \
+        --json | tee deployment_outputs/caveat_enforcers_$CHAIN.json
+
+    # Deploy Stateless Delegator
+    echo "[8c] Stateless Delegator..."
+    forge script script/DeployEIP7702StatelessDeleGator.s.sol \
+        --rpc-url $RPC_URL \
+        --private-key $PRIVATE_KEY \
+        --broadcast \
+        --json | tee deployment_outputs/stateless_delegator_$CHAIN.json
+
+    echo "✅ $CHAIN deployment complete."
+done
+
+echo "=== ALL SELECTED CHAIN DEPLOYMENTS COMPLETE! ✅ ==="
+echo "Check deployment_outputs/ for addresses and JSON files."
